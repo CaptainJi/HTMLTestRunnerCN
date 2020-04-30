@@ -66,12 +66,33 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # URL: http://tungwaiyip.info/software/HTMLTestRunner.html
 
-__author__ = "Wai Yip Tung,  Findyou"
-__version__ = "0.8.3"
+__author__ = "Wai Yip Tung,  Findyou,  CaptainJi"
+__version__ = "0.8.4"
 
 
 """
 Change History
+Version 0.8.4 -CaptainJi 20200429
+* 报告页面增加截图；添加图片部分使用“天枢”的方法
+* 可选使用url方式添加图片或base64方式添加图片
+* 获取图片原理为根据控制台中的print输出的内容判断截图路径及文件名，其中“../screenshots/”为截图所在路径需替换成自己的截图路径；
+* “截图：”为提取关键字，需调整为截图函数中print内的内容；截图函数的print内需加入“ end='' ”不然输出路径将带有'/n'换行符导致报错
+* 使用方法：
+
+        1.首先在截图函数中添加print，print内容为“关键字+截图路径及文件名” 结尾需增加“,end=''”参数，不然输出路径将带有'/n'换行符，导致程序报错
+        
+          例如：print('截图:'+'%s %s.png' % (module, now_time), end='')
+          
+        2.在“def _generate_report_test(self, rows, cid, tid, n, t, o, e):”函数中查找base64_status变量并赋bool值，默认为True。
+        
+          True 为启用base64模式 
+          False 为启用url模式
+          注意：启用base64模式后图片将由base64编码保存至html文件中，如果测试用例较多可能导致测试报告变得比较大，但是html文件脱离截图文件夹后依然可以正常查看图片
+          
+        3.调整image_url变量中关键字起始字符数；例如：“截图：”字符数为3，那么为'unum + 3'，如关键字为'screenshot'字符数为10，那么3就需要改成10
+        4.截图图片需为png格式
+        
+                  
 Version 0.8.3 -Findyou 20171206
 * BUG fixed :错误的测试用例没有统计与显示
 * BUG fixed :当PASS的测试用例有print内容时，通过按钮显示为红色
@@ -115,6 +136,7 @@ except ImportError:
     from io import StringIO
 import sys
 import time
+import base64
 import unittest
 from xml.sax import saxutils
 
@@ -365,6 +387,7 @@ table       { font-size: 100%; }
 .errorCase  { color: #f0ad4e; font-weight: bold; }
 .hiddenRow  { display: none; }
 .testcase   { margin-left: 2em; }
+.example    { width:400px; height:200px; object-fit:contain;}
 </style>
 """
 
@@ -391,15 +414,16 @@ table       { font-size: 100%; }
     # 汉化,加美化效果 --Findyou
     REPORT_TMPL = """
 <p id='show_detail_line'>
-<a class="btn btn-primary" href='javascript:showCase(4)'>概要{ %(passrate)s }</a>
-<a class="btn btn-success" href='javascript:showCase(0)'>通过{ %(Pass)s }</a>
-<a class="btn btn-danger" href='javascript:showCase(1)'>失败{ %(fail)s }</a>
-<a class="btn btn-warning" href='javascript:showCase(2)'>错误{ %(error)s }</a>
-<a class="btn btn-info" href='javascript:showCase(3)'>所有{ %(count)s }</a>
+<a class="btn btn-primary" href='javascript:showCase(4)'>通过率[ %(passrate)s ]</a>
+<a class="btn btn-success" href='javascript:showCase(0)'>通过[ %(Pass)s ]条</a>
+<a class="btn btn-danger" href='javascript:showCase(1)'>失败[ %(fail)s ]条</a>
+<a class="btn btn-warning" href='javascript:showCase(2)'>错误[ %(error)s ]条</a>
+<a class="btn btn-info" href='javascript:showCase(3)'>所有[ %(count)s ]条</a>
 </p>
 <table id='result_table' class="table table-condensed table-bordered table-hover">
 <colgroup>
 <col align='left' />
+<col align='right' />
 <col align='right' />
 <col align='right' />
 <col align='right' />
@@ -413,6 +437,7 @@ table       { font-size: 100%; }
     <td>失败</td>
     <td>错误</td>
     <td>详细</td>
+    <td>截图</td>    
 </tr>
 %(test_list)s
 <tr id='total_row' class="text-center info">
@@ -434,10 +459,12 @@ table       { font-size: 100%; }
     <td class="text-center">%(fail)s</td>
     <td class="text-center">%(error)s</td>
     <td class="text-center"><a href="javascript:showClassDetail('%(cid)s',%(count)s)" class="detail" id='%(cid)s'>详细</a></td>
+    <td class="text-center">断言或错误截图</td>
 </tr>
 """ # variables: (style, desc, count, Pass, fail, error, cid)
 
-    #有output内容的样式，去掉原来JS效果，美化展示效果  -Findyou v0.8.2.3
+    # 有output内容的样式，去掉原来JS效果，美化展示效果  -Findyou v0.8.2.3
+    # 添加截图样式  -CaptainJi v0.8.2.4
     REPORT_TEST_WITH_OUTPUT_TMPL = r"""
 <tr id='%(tid)s' class='%(Class)s'>
     <td class='%(style)s'><div class='testcase'>%(desc)s</div></td>
@@ -454,14 +481,25 @@ table       { font-size: 100%; }
     </pre>
     </div>
     </td>
+    <td align="right">
+        <a %(hidde)s href="">
+            <img   src="%(image)s"  class="example"/>            
+        </a>
+    </td>
 </tr>
 """ # variables: (tid, Class, style, desc, status)
 
     # 无output内容样式改为button，按钮效果为不可点击  -Findyou v0.8.2.3
+    # 添加截图样式  -CaptainJi v0.8.2.4
     REPORT_TEST_NO_OUTPUT_TMPL = r"""
 <tr id='%(tid)s' class='%(Class)s'>
     <td class='%(style)s'><div class='testcase'>%(desc)s</div></td>
     <td colspan='5' align='center'><button id='btn_%(tid)s' type="button"  class="btn-xs" disabled="disabled" data-toggle="collapse" data-target='#div_%(tid)s'>%(status)s</button></td>
+    <td align="right">
+        <a %(hidde)s href="">
+            <img   src="%(image)s"  class="example"/>
+        </a>
+    </td>
 </tr>
 """ # variables: (tid, Class, style, desc, status)
 
@@ -740,7 +778,6 @@ class HTMLTestReportCN(Template_mixin):
         )
         return report
 
-
     def _generate_report_test(self, rows, cid, tid, n, t, o, e):
         # e.g. 'pt1.1', 'ft1.1', etc
         has_output = bool(o or e)
@@ -753,6 +790,7 @@ class HTMLTestReportCN(Template_mixin):
         tmpl = has_output and self.REPORT_TEST_WITH_OUTPUT_TMPL or self.REPORT_TEST_NO_OUTPUT_TMPL
 
         # utf-8 支持中文 - Findyou
+        # 增加截图 - CaptainJi
          # o and e should be byte string because they are collected from stdout and stderr?
         if isinstance(o, str):
             # TODO: some problem with 'string_escape': it escape \n and mess up formating
@@ -777,13 +815,32 @@ class HTMLTestReportCN(Template_mixin):
             id = tid,
             output = saxutils.escape(uo+ue),
         )
-
+        # 插入图片
+        # 获取图片原理为根据控制台中的print输出内容判断截图路径及文件名，其中“../screenshots/”为截图所在路径需替换成自己的截图路径；
+        # “截图：”为提取关键字，需调整为截图函数中print内的内容,截图函数的print内需加入“ end='' ”不然输出路径将带有'/n'换行符导致报错
+        base64_status = True  # True启用base64模式 False启用url模式，注意：启用base64模式后截图文件将由base64格式保存至html文件中，如果测试用例较多可能导致测试报告变得很大
+        unum = str(uo).rfind('截图:')
+        if ((uo or ue) and unum != -1):
+            hidde_status = ''
+            unum = str(uo).rfind('截图:')
+            # 'unum + 3'为起始字符数，需根据print内容调整例如：“截图：”字符数为3，那么为'unum + 3'，如关键字为'screenshot'字符数为10，那么3就需要改成10
+            image_url = '../screenshots/' + str(uo)[unum + 3:unum + 100].replace('', '')
+            # base64模式读取图片
+            with open(image_url, 'rb') as file:
+                temp = base64.b64encode(file.read())  # 以base64编码读取文件，不使用base64.b64encode()将导致文件以字符串格式赋值
+                image_base64 = temp.decode()
+            image_file = image_url if not base64_status else 'data:image/png;base64,'+image_base64
+        else:
+            hidde_status = '''hidden="hidden"'''
+            image_file = ''
         row = tmpl % dict(
             tid = tid,
             Class = (n == 0 and 'hiddenRow' or 'none'),
             style = n == 2 and 'errorCase' or (n == 1 and 'failCase' or 'passCase'),
             desc = desc,
             script = script,
+            hidde=hidde_status,
+            image = image_file,  # 增加image变量
             status = self.STATUS[n],
         )
         rows.append(row)
